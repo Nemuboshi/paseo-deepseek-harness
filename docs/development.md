@@ -16,6 +16,16 @@ pnpm run build
 Both generated files are ignored by git. Run the build before you install the
 plugin from a fresh clone.
 
+## Two package managers
+
+Paseo runs the build steps from `paseo-plugin.json` with npm, so an installer
+needs only Node.js. Every other command in this repository uses pnpm. Keep the
+steps in `paseo-plugin.json` and `package.json` in sync when you add one.
+
+Because the repository has no `package-lock.json`, the npm install step
+resolves the ranges in `package.json`. The pnpm lockfile pins the development
+toolchain only.
+
 Paseo loads the plugin source from `client/`, `server/` and `shared/`. A
 relative import outside those directories fails the plugin load.
 `server/module-boundary.test.ts` checks this rule.

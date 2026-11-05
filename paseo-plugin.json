@@ -7,12 +7,12 @@
   },
   "build": [
     [
-      "pnpm",
+      "npm",
       "install",
-      "--frozen-lockfile"
+      "--include=dev"
     ],
     [
-      "pnpm",
+      "npm",
       "run",
       "build"
     ]

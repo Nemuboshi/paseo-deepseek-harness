@@ -10,8 +10,8 @@ Provider ID: `dsh-pi`. Plugin ID: `paseo-deepseek-harness`.
 
 - Paseo 0.11.0 or newer.
 - `dsh` 0.2.x on the same machine as the Paseo daemon.
-- `pnpm` on the daemon host. Paseo runs `pnpm install` and `pnpm run build`
-  when it installs the plugin from source.
+- Node.js 24 on the daemon host. Paseo builds a source install with npm, which
+  ships with Node.
 - A configured model route in the DSH profile. The plugin does not store API
   keys.
 
