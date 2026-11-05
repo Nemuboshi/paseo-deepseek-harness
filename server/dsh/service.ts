@@ -1,0 +1,991 @@
+import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { basename, isAbsolute } from "node:path";
+import type {
+  BridgeCatalog,
+  BridgeInitializeResult,
+  BridgeMethods,
+  BridgeNotifications,
+  BridgeUsage,
+  DshSessionEvent,
+  InteractionRequest,
+  ModelSelection,
+  QuestionAnswer,
+  SessionOpenParams,
+  SessionOpenResult,
+  SessionSummary,
+  PromptPart,
+  SlashCommand,
+} from "../../shared/bridge-protocol.js";
+import {
+  listParams,
+  nonempty,
+  record,
+  savedModel,
+  selection,
+  validateAnswers,
+  validateContent,
+  validateModel,
+  validateOpen,
+} from "./service-params.js";
+import { SubagentSettings } from "./subagent-settings.js";
+import { canStopSessionRuntime, SubagentRunTracker } from "./runtime-safety.js";
+import { slashLine } from "../../shared/bridge-protocol.js";
+import type {
+  ApprovalOutcome,
+  HostAgent,
+  HostContext,
+  HostHandle,
+  HostHelpers,
+  HostServices,
+  HostSession,
+  ModelSelectionRef,
+} from "./host.js";
+
+type Notify = <K extends keyof BridgeNotifications>(
+  method: K,
+  params: BridgeNotifications[K],
+) => void;
+interface PendingInteraction {
+  request: InteractionRequest;
+  finish(value?: ApprovalOutcome | { answers: QuestionAnswer[] }): void;
+}
+interface RecordEntry {
+  handle: HostHandle;
+  model?: ModelSelection;
+  preset?: string;
+  selection: ModelSelectionRef;
+}
+
+
+/** Host services and methods every bridge method relies on; `service` alone means the service itself. */
+const REQUIRED_HOST_SURFACE = {
+  agents: ["get", "create", "resume"],
+  sessionQuery: ["listSessions", "readSession", "observeSession"],
+  agentPresets: ["list", "resolve", "mount", "select"],
+  llm: ["listProviders", "listModels"],
+} as const;
+
+/** The required host services and methods this DSH does not provide. */
+export function missingHostSurface(ctx: HostContext): string[] {
+  const missing: string[] = [];
+  for (const [service, methods] of Object.entries(REQUIRED_HOST_SURFACE)) {
+    let provided: unknown;
+    try {
+      provided = ctx.get(service as keyof HostServices);
+    } catch {
+      // A service that is not registered may throw instead of returning undefined.
+      provided = undefined;
+    }
+    if (provided === null || typeof provided !== "object") {
+      missing.push(service);
+      continue;
+    }
+    for (const method of methods) {
+      if (typeof (provided as Record<string, unknown>)[method] !== "function") {
+        missing.push(`${service}.${method}`);
+      }
+    }
+  }
+  return missing;
+}
+
+export class BridgeService {
+  private readonly owned = new Map<string, RecordEntry>();
+  private readonly opening = new Map<string, Promise<SessionOpenResult>>();
+  private readonly closing = new Map<string, Promise<void>>();
+  private readonly tracked = new Set<string>();
+  private readonly parent = new Map<string, string>();
+  private readonly commandAborts = new Map<string, AbortController>();
+  private readonly preapproved = new Map<string, ReadonlySet<string>>();
+  private readonly interactions = new Map<string, PendingInteraction>();
+  private readonly subscriptions: Array<() => void> = [];
+  /** Last usage payload sent per session, so an unchanged fold is not re-sent. */
+  private readonly lastUsage = new Map<string, string>();
+  /** Folded titles per session id, so repeated import listings stay cheap. */
+  private readonly titles = new Map<string, string>();
+  private stopping = false;
+  private stopTask?: Promise<{}>;
+  private readonly subagentSettings: SubagentSettings;
+  private subagentSettingsInitializationError?: Error;
+  private readonly subagentRuns = new SubagentRunTracker();
+
+  constructor(
+    private readonly ctx: HostContext,
+    private readonly notify: Notify,
+    private readonly profile = "paseo",
+    private readonly helpers?: HostHelpers,
+  ) {
+    this.subagentSettings = new SubagentSettings(ctx, profile);
+    this.subscriptions.push(
+      ctx.on("session/created", (session) => {
+        if (session.header.parentSession) {
+          this.parent.set(
+            String(session.id),
+            String(session.header.parentSession),
+          );
+        }
+      }),
+    );
+    this.subscriptions.push(
+      ctx.on("session/event", (session, event) => {
+        if (this.tracked.has(String(session.id)))
+          notify("session.event", { sessionId: String(session.id), event });
+      }),
+    );
+    this.subscriptions.push(
+      ctx.on("agent/assistant-stream", ({ agent, frame }) => {
+        if (this.tracked.has(String(agent.id)))
+          notify("session.stream", { sessionId: String(agent.id), frame });
+      }),
+    );
+    this.subscriptions.push(
+      ctx.on("agent/status", ({ agent, status }) => {
+        if (this.tracked.has(String(agent.id)))
+          notify("session.status", { sessionId: String(agent.id), status });
+      }),
+    );
+    // Usage rides the projection change feed rather than the session event
+    // stream: it fires exactly when the harness's token fold moves, so no
+    // session-event name has to be guessed and an idle session costs nothing.
+    const projections = ctx.get("sessionProjections");
+    if (projections) {
+      this.subscriptions.push(
+        projections.onChanged((session, key) => {
+          if (key === "tokenUsage" || key === "contextPressure") {
+            this.publishUsage(session);
+          }
+        }),
+      );
+    }
+    this.subscriptions.push(
+      ctx.on("approval/request", (request, next) => {
+        const sessionId = this.rootFor(request.agent);
+        if (!sessionId) return next();
+        if (this.preapproved.get(sessionId)?.has(request.toolName))
+          return Promise.resolve("allowed-once" as const);
+        return this.ask(
+          {
+            sessionId,
+            requestId: randomUUID(),
+            kind: "approval",
+            toolName: request.toolName,
+            callId: request.callId,
+            reason: request.reason,
+          },
+          request.signal,
+        ).then((value) => {
+          if (typeof value !== "string")
+            throw new Error("Unexpected approval response");
+          return value;
+        });
+      }),
+    );
+    this.subscriptions.push(
+      ctx.on("user-questions/request", (request, next) => {
+        const sessionId = this.rootFor(request.agent);
+        if (!sessionId) return next();
+        return this.ask(
+          {
+            sessionId,
+            requestId: randomUUID(),
+            kind: "questions",
+            questions: request.questions,
+          },
+          request.signal,
+        ).then((value) => {
+          if (typeof value === "string")
+            throw new Error("Unexpected question response");
+          return value;
+        });
+      }),
+    );
+    this.subscriptions.push(
+      ...this.subagentRuns.observeHost(ctx, (childId) =>
+        this.rootForId(childId),
+      ),
+    );
+  }
+
+  /**
+   * Fold the harness's token projections into Paseo's usage vocabulary.
+   *
+   * `tokenUsage` totals and `contextPressure` carry every figure Paseo can
+   * render, and both are plain numbers, so no live harness object crosses the
+   * wire. Returns undefined when no projection registry is mounted or neither
+   * unit is registered: a profile without them degrades to no usage rather
+   * than failing the turn.
+   */
+  private readUsage(session: HostSession): BridgeUsage | undefined {
+    const projections = this.ctx.get("sessionProjections");
+    if (!projections) return undefined;
+    let values: Partial<Record<string, unknown>>;
+    try {
+      values = projections.snapshot(session, [
+        "tokenUsage",
+        "contextPressure",
+      ]).values;
+    } catch {
+      return undefined;
+    }
+    const tokens = values.tokenUsage as
+      | {
+          uncachedInputTokens?: number;
+          outputTokens?: number;
+          cacheReadTokens?: number;
+        }
+      | undefined;
+    const pressure = values.contextPressure as
+      | {
+          contextWindow?: number;
+          pressureTokens?: number;
+          projectedTokens?: number;
+        }
+      | undefined;
+    const usage: BridgeUsage = {};
+    if (typeof tokens?.uncachedInputTokens === "number")
+      usage.inputTokens = tokens.uncachedInputTokens;
+    if (typeof tokens?.cacheReadTokens === "number")
+      usage.cachedInputTokens = tokens.cacheReadTokens;
+    if (typeof tokens?.outputTokens === "number")
+      usage.outputTokens = tokens.outputTokens;
+    // `projectedTokens` folds the shadow price of an adjacent compaction into
+    // the last request's prompt size, so the meter drops as soon as a
+    // compaction lands instead of waiting for the next request. dsh before
+    // 0.2.1 writes no shadow price and the field is absent: fall back to the
+    // raw prompt size.
+    const used =
+      typeof pressure?.projectedTokens === "number"
+        ? pressure.projectedTokens
+        : pressure?.pressureTokens;
+    if (typeof used === "number") usage.contextWindowUsedTokens = used;
+    if (typeof pressure?.contextWindow === "number")
+      usage.contextWindowMaxTokens = pressure.contextWindow;
+    // The units materialize at zero before any provider usage lands, so a
+    // payload carrying no measured token is warm-up noise, not a reading.
+    const measured =
+      (usage.inputTokens ?? 0) > 0 ||
+      (usage.cachedInputTokens ?? 0) > 0 ||
+      (usage.outputTokens ?? 0) > 0 ||
+      (usage.contextWindowUsedTokens ?? 0) > 0;
+    return measured ? usage : undefined;
+  }
+
+  /** Publish one tracked session's usage, skipping an unchanged fold. */
+  private publishUsage(session: HostSession): void {
+    const sessionId = String(session.id);
+    if (!this.tracked.has(sessionId)) return;
+    const usage = this.readUsage(session);
+    if (!usage) return;
+    const signature = JSON.stringify(usage);
+    if (this.lastUsage.get(sessionId) === signature) return;
+    this.lastUsage.set(sessionId, signature);
+    this.notify("session.usage", { sessionId, usage });
+  }
+
+  private rootFor(agent: HostAgent | undefined): string | undefined {
+    return agent && this.rootForId(String(agent.id), agent);
+  }
+
+  private rootForId(
+    sessionId: string,
+    agent = this.ctx.get("agents")?.get(sessionId),
+  ): string | undefined {
+    let id: string | undefined = sessionId;
+    const seen = new Set<string>();
+    while (id && !seen.has(id)) {
+      if (this.tracked.has(id)) return id;
+      seen.add(id);
+      id = this.parent.get(id) ??
+        (id === agent?.id ? agent.session.header.parentSession : undefined);
+    }
+    return undefined;
+  }
+
+  private ask(
+    request: InteractionRequest,
+    signal?: AbortSignal,
+  ): Promise<ApprovalOutcome | { answers: QuestionAnswer[] }> {
+    if (
+      signal?.aborted ||
+      this.stopping ||
+      this.closing.has(request.sessionId)
+    ) {
+      return request.kind === "approval"
+        ? Promise.resolve("cancelled")
+        : Promise.reject(new Error("Question cancelled"));
+    }
+    return new Promise((resolve, reject) => {
+      const abort = () => finish();
+      const finish = (
+        value?: ApprovalOutcome | { answers: QuestionAnswer[] },
+      ) => {
+        if (!this.interactions.delete(request.requestId)) return;
+        signal?.removeEventListener("abort", abort);
+        this.notify("interaction.closed", {
+          requestId: request.requestId,
+          sessionId: request.sessionId,
+        });
+        if (value !== undefined) resolve(value);
+        else if (request.kind === "approval") resolve("cancelled");
+        else reject(new Error("Question cancelled"));
+      };
+      this.interactions.set(request.requestId, { request, finish });
+      signal?.addEventListener("abort", abort, { once: true });
+      this.notify("interaction.request", request);
+    });
+  }
+
+  async catalog(): Promise<BridgeCatalog> {
+    const llm = this.ctx.get("llm");
+    const presets = this.ctx.get("agentPresets");
+    const permission = this.ctx.get("permissionPresets");
+    const models: BridgeCatalog["models"] = [];
+    const defaultModel = selection(
+      this.ctx.get("agentDefaultModel")?.currentSelection(),
+    );
+    for (const provider of llm.listProviders()) {
+      try {
+        for (const model of await llm.listModels(provider.id)) {
+          let reasoningEfforts: BridgeCatalog["models"][number]["reasoningEfforts"];
+          try {
+            reasoningEfforts = (
+              await llm.resolveModelInfo?.(provider.id, model.id)
+            )?.reasoning?.efforts;
+          } catch {
+            /* Optional capability discovery may be unavailable for this route. */
+          }
+          models.push({
+            id: `${provider.id}/${model.id}`,
+            provider: provider.id,
+            model: model.id,
+            name: model.name ?? model.id,
+            providerName: provider.name ?? provider.id,
+            reasoningEfforts,
+          });
+        }
+      } catch {
+        /* One unconfigured provider must not hide the other configured routes. */
+      }
+    }
+    if (
+      defaultModel &&
+      !models.some(
+        (model) =>
+          model.provider === defaultModel.provider &&
+          model.model === defaultModel.model,
+      )
+    ) {
+      models.push({
+        id: `${defaultModel.provider}/${defaultModel.model}`,
+        ...defaultModel,
+        name: defaultModel.model,
+        providerName: defaultModel.provider,
+      });
+    }
+    return {
+      models,
+      presets: (await presets.list())
+        .filter((preset) => !preset.broken)
+        .map((preset) => ({
+          id: preset.id,
+          name: preset.name,
+          description: preset.description,
+        })),
+      defaultModel,
+      defaultPreset: presets.defaultId,
+      ...(permission && this.ctx.get("commands")
+        ? {
+            permissionPresets: permission.names.map((id) => {
+              const option = permission.optionOf(id);
+              return {
+                id,
+                name: option.name,
+                ...(option.description
+                  ? { description: option.description }
+                  : {}),
+              };
+            }),
+            defaultPermissionPreset: permission.defaultPreset,
+          }
+        : {}),
+    };
+  }
+
+  async handle<K extends keyof BridgeMethods>(
+    method: K,
+    input: unknown = {},
+  ): Promise<BridgeMethods[K]["result"]> {
+    if (this.stopping && method !== "bridge.shutdown")
+      throw new Error("Bridge is shutting down");
+    if (!input || typeof input !== "object" || Array.isArray(input))
+      throw new Error("Method params must be an object");
+    const params = record(input);
+    let result: unknown;
+    switch (method) {
+      case "bridge.initialize": {
+        const missing = missingHostSurface(this.ctx);
+        if (missing.length > 0) {
+          result = { protocolVersion: 1, profile: this.profile, capabilities: {
+            stream: true, approvals: false, questions: false, history: true, cancel: true,
+          }, catalog: { models: [], presets: [] }, missing } satisfies BridgeInitializeResult;
+          break;
+        }
+        try {
+          await this.subagentSettings.initialize();
+          this.subagentSettingsInitializationError = undefined;
+        } catch (error) {
+          this.subagentSettingsInitializationError = new Error(
+            `Subagent settings initialization failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          console.error(this.subagentSettingsInitializationError.message);
+        }
+        result = {
+          protocolVersion: 1,
+          profile: this.profile,
+          capabilities: {
+            stream: true,
+            approvals: Boolean(this.ctx.get("approval")),
+            questions: Boolean(this.ctx.get("userQuestions")),
+            history: true,
+            cancel: true,
+          },
+          catalog: await this.catalog(),
+        } satisfies BridgeInitializeResult;
+        break;
+      }
+      case "subagent.settings.read":
+        if (this.subagentSettingsInitializationError) throw this.subagentSettingsInitializationError;
+        result = await this.subagentSettings.read();
+        break;
+      case "subagent.settings.save":
+        result = await this.subagentSettings.save(params);
+        this.subagentSettingsInitializationError = undefined;
+        break;
+      case "session.list":
+        result = { sessions: await this.listSessions(listParams(params)) };
+        break;
+      case "session.read":
+        result = await this.ctx
+          .get("sessionQuery")
+          .readSession(nonempty(params.sessionId, "sessionId"));
+        break;
+      case "session.open":
+        result = await this.open(validateOpen(params));
+        break;
+      case "session.prompt":
+      case "session.steer": {
+        const agent = this.agent(params.sessionId);
+        const content = await this.admitContent(agent, validateContent(params.content));
+        const id = randomUUID();
+        const message = Object.freeze({
+          id,
+          role: "user",
+          source: Object.freeze({ kind: "user" }),
+          content: Object.freeze(content),
+        });
+        if (method === "session.steer") agent.steer(message);
+        else agent.followup(message);
+        result = { messageId: id };
+        break;
+      }
+      case "session.configure": {
+        const agent = this.agent(params.sessionId);
+        const entry = this.owned.get(String(agent.id))!;
+        if (agent.status !== "idle")
+          throw new Error("Configuration requires an idle session");
+        const model =
+          params.model === undefined ? undefined : validateModel(params.model);
+        const preset =
+          params.preset === undefined
+            ? undefined
+            : nonempty(params.preset, "preset");
+        const permissionPreset =
+          params.permissionPreset === undefined
+            ? undefined
+            : nonempty(params.permissionPreset, "permissionPreset");
+        if (model && !this.helpers)
+          throw new Error(
+            "Model switching is unavailable in this Harness runtime",
+          );
+        if (preset)
+          entry.preset = await this.ctx
+            .get("agentPresets")
+            .select(agent, preset);
+        if (model) {
+          agent.session.append("model/selection", model);
+          entry.selection.current = model;
+          entry.model = model;
+        }
+        if (permissionPreset)
+          await this.setPermissionPreset(agent, permissionPreset);
+        result = {
+          model: entry.model,
+          preset: entry.preset,
+          permissionPreset: this.ctx
+            .get("permissionPresets")
+            ?.current(agent.session),
+        };
+        break;
+      }
+      case "session.commands":
+        result = { commands: await this.slashCommands(this.agent(params.sessionId)) };
+        break;
+      case "session.command":
+        result = await this.runCommand(
+          this.agent(params.sessionId),
+          nonempty(params.name, "name"),
+          typeof params.arguments === "string" ? params.arguments : "",
+        );
+        break;
+      case "session.rename": {
+        const agent = this.agent(params.sessionId);
+        const titles = this.ctx.get("sessionTitle");
+        if (!titles)
+          throw new Error("Session titles are unavailable in this profile");
+        titles.rename(agent.session, nonempty(params.title, "title"));
+        result = {};
+        break;
+      }
+      case "session.cancel":
+        this.commandAborts.get(nonempty(params.sessionId, "sessionId"))?.abort();
+        this.agent(params.sessionId).cancel(
+          { kind: "user" },
+          { keepInbox: false },
+        );
+        result = {};
+        break;
+      case "session.can_stop_runtime":
+        result = {
+          canStop: await this.canStopRuntime(
+            nonempty(params.sessionId, "sessionId"),
+          ),
+        };
+        break;
+      case "session.close":
+        await this.close(nonempty(params.sessionId, "sessionId"));
+        result = {};
+        break;
+      case "interaction.respond":
+        this.respond(params);
+        result = {};
+        break;
+      case "bridge.shutdown":
+        result = await this.shutdown();
+        break;
+      default:
+        throw new Error(`Unsupported bridge method: ${String(method)}`);
+    }
+    return result as BridgeMethods[K]["result"];
+  }
+
+  /** Store images and files as durable DSH attachments, in prompt order. */
+  private async admitContent(
+    agent: HostAgent,
+    parts: PromptPart[],
+  ): Promise<object[]> {
+    if (parts.some((part) => part.type === "image")) {
+      const model = this.owned.get(String(agent.id))?.model;
+      const info = model
+        ? await this.ctx.get("llm").resolveModelInfo?.(model.provider, model.model)
+        : undefined;
+      if (info?.inputModalities && !info.inputModalities.includes("image"))
+        throw new Error(`Model "${model!.model}" does not support image input`);
+    }
+    const attachments = () => {
+      const service = this.ctx.get("attachments");
+      if (!service) throw new Error("Attachments are unavailable in this profile");
+      return service;
+    };
+    // Stores are independent; Promise.all keeps prompt order.
+    return Promise.all(
+      parts.map(async (part) => {
+        if (part.type === "text") return Object.freeze({ type: "text", text: part.text });
+        if (part.type === "image") {
+          const attachment = await attachments().saveImage({
+            data: Buffer.from(part.data, "base64"),
+            mediaType: part.mediaType,
+            ...(part.name ? { name: part.name } : {}),
+          });
+          return Object.freeze({ type: "image", attachment });
+        }
+        const attachment = await attachments().saveFile({
+          data: await readFile(part.path),
+          name: part.name ?? basename(part.path),
+        });
+        return Object.freeze({ type: "file", attachment });
+      }),
+    );
+  }
+
+  /**
+   * List native sessions for Paseo's import picker.
+   *
+   * `readTitleSnapshots` decodes each requested session's log to fold its
+   * title, which costs seconds per hundred sessions on a large history, so
+   * titles are folded only for the rows this call returns: cwd and query
+   * filter first, then newest first, then the limit. Folded titles are cached
+   * for this bridge's lifetime; a title renamed outside Paseo keeps its cached
+   * value until the bridge is replaced, while live sessions carry their header
+   * title regardless.
+   */
+  private async listSessions(
+    params: { cwd?: string; query?: string; limit?: number },
+  ): Promise<SessionSummary[]> {
+    const query = this.ctx.get("sessionQuery");
+    const records = await query.listSessions();
+    let sessions = records
+      .map((record) => ({ ...record.header }))
+      .filter((session) => !params.cwd || session.cwd === params.cwd);
+    if (params.query) {
+      // A title query needs every title, so this path folds the whole history.
+      await this.foldTitles(query, sessions);
+      const needle = params.query.toLowerCase();
+      sessions = sessions.filter(
+        (session) =>
+          session.title?.toLowerCase().includes(needle) ||
+          session.id.toLowerCase().includes(needle),
+      );
+    }
+    sessions.sort((left, right) => right.createdAt - left.createdAt);
+    if (params.limit !== undefined && sessions.length > params.limit)
+      sessions = sessions.slice(0, params.limit);
+    await this.foldTitles(query, sessions);
+    return sessions;
+  }
+
+  /** Fill in cached titles, reading only the sessions this bridge has not folded yet. */
+  private async foldTitles(
+    query: HostServices["sessionQuery"],
+    sessions: SessionSummary[],
+  ): Promise<void> {
+    if (typeof query.readTitleSnapshots !== "function") return;
+    // The official bulk title read owns live/cold source and validation. A
+    // header that already carries a title is live and needs no fold at all.
+    const missing = sessions.filter(
+      (session) => !session.title && !this.titles.has(session.id),
+    );
+    if (missing.length > 0) {
+      const titles = await query.readTitleSnapshots(
+        missing.map((session) => session.id),
+      );
+      for (let i = 0; i < missing.length; i++) {
+        const result = titles[i];
+        const title =
+          result?.status === "fulfilled"
+            ? result.value.title?.title
+            : undefined;
+        if (typeof title === "string") this.titles.set(missing[i]!.id, title);
+      }
+    }
+    for (const session of sessions) {
+      const title = this.titles.get(session.id);
+      if (title !== undefined) session.title = title;
+    }
+  }
+
+  /** Registered commands first; a skill never shadows a command of the same name. */
+  private async slashCommands(agent: HostAgent): Promise<SlashCommand[]> {
+    const commands: SlashCommand[] = (this.ctx.get("commands")?.list(agent) ?? []).map(
+      (command) => ({
+        name: command.name,
+        description: command.description,
+        ...(command.input?.hint ? { argumentHint: command.input.hint } : {}),
+        kind: "command" as const,
+      }),
+    );
+    const taken = new Set(commands.map((command) => command.name));
+    const registry =
+      this.ctx.get("agentPresets").serviceFor?.(agent, "skills") ??
+      this.ctx.get("skills");
+    let skills: SlashCommand[] = [];
+    try {
+      skills = (
+        (await registry?.list({
+          cwd: agent.session.header.cwd,
+          scope: agent,
+        })) ?? []
+      )
+        .filter(
+          (skill) =>
+            skill.invocation?.userInvocable === true &&
+            typeof skill.name === "string" &&
+            !taken.has(skill.name),
+        )
+        .map((skill) => ({
+          name: skill.name,
+          description: skill.description,
+          kind: "skill" as const,
+        }));
+    } catch {
+      // A failed skill read degrades to commands only.
+    }
+    return [...commands, ...skills].sort((left, right) =>
+      left.name < right.name ? -1 : 1,
+    );
+  }
+
+  private async runCommand(
+    agent: HostAgent,
+    name: string,
+    args: string,
+  ): Promise<BridgeMethods["session.command"]["result"]> {
+    const commands = this.ctx.get("commands");
+    if (!commands) throw new Error("Commands are unavailable in this profile");
+    const sessionId = String(agent.id);
+    if (this.commandAborts.has(sessionId))
+      throw new Error("A DSH command is already running");
+    const abort = new AbortController();
+    this.commandAborts.set(sessionId, abort);
+    try {
+      const execution = await commands.execute(
+        agent,
+        slashLine(name, args),
+        [],
+        abort.signal,
+      );
+      if (!execution) throw new Error(`Unknown DSH command: /${name}`);
+      // Handlers such as /goal and /plan wake the agent; let that settle first.
+      await new Promise((resolve) => setImmediate(resolve));
+      return {
+        kind: execution.result.kind === "success" ? "success" : "error",
+        ...(execution.result.text ? { text: execution.result.text } : {}),
+        running: agent.status === "running",
+      };
+    } finally {
+      this.commandAborts.delete(sessionId);
+    }
+  }
+
+  private agent(id: unknown): HostAgent {
+    const sessionId = nonempty(id, "sessionId");
+    const agent = this.owned.get(sessionId)?.handle.agent;
+    if (
+      !agent ||
+      this.closing.has(sessionId) ||
+      this.ctx.get("agents").get(sessionId) !== agent
+    )
+      throw new Error("Session is not open in this bridge");
+    return agent;
+  }
+
+  private open(params: SessionOpenParams): Promise<SessionOpenResult> {
+    const id =
+      params.sessionId === undefined
+        ? randomUUID()
+        : nonempty(params.sessionId, "sessionId");
+    if (params.resume && params.sessionId === undefined)
+      return Promise.reject(new Error("Resume requires sessionId"));
+    if (this.owned.has(id) || this.opening.has(id) || this.closing.has(id))
+      return Promise.reject(
+        new Error("Session already open or changing ownership"),
+      );
+    if (!isAbsolute(nonempty(params.cwd, "cwd")))
+      return Promise.reject(new Error("cwd must be absolute"));
+    if (params.model !== undefined && selection(params.model) === undefined)
+      return Promise.reject(new Error("Invalid model selection"));
+    this.tracked.add(id);
+    if (params.preapprovedTools?.length)
+      this.preapproved.set(id, new Set(params.preapprovedTools));
+    const task = this.performOpen(id, params);
+    this.opening.set(id, task);
+    void task.then(
+      () => this.opening.delete(id),
+      () => {
+        this.opening.delete(id);
+        this.tracked.delete(id);
+        this.preapproved.delete(id);
+        this.lastUsage.delete(id);
+        this.subagentRuns.clearRoot(id);
+      },
+    );
+    return task;
+  }
+
+  private async performOpen(
+    id: string,
+    params: SessionOpenParams,
+  ): Promise<SessionOpenResult> {
+    const query = this.ctx.get("sessionQuery");
+    const presets = this.ctx.get("agentPresets");
+    let savedPreset: string | undefined;
+    let historical: DshSessionEvent[] = [];
+    if (params.resume) {
+      // Reading neither acquires a writer nor drives a model request.
+      const observation = await query.observeSession(id, {
+        projectionMode: "all",
+      });
+      try {
+        savedPreset = observation.projections?.values?.agentPreset ?? undefined;
+      } finally {
+        observation[Symbol.dispose]();
+      }
+      historical = (await query.readSession(id)).events;
+      if (params.preset && params.preset !== savedPreset)
+        throw new Error("A resumed session must retain its recorded preset");
+    }
+    const preset = await presets.resolve(savedPreset ?? params.preset);
+    const model =
+      selection(params.model) ??
+      savedModel(historical) ??
+      selection(this.ctx.get("agentDefaultModel")?.currentSelection());
+    if (!model) throw new Error("Profile has no configured default model");
+    const modelRef: ModelSelectionRef = {
+      current: model,
+      assembled: undefined,
+    };
+    const setup = async (agentCtx: HostContext) => {
+      this.subagentRuns.observeRootScope(id, agentCtx);
+      this.helpers?.installModelSelection(agentCtx, modelRef);
+      await presets.mount(agentCtx, preset.id);
+      if (params.systemPrompt) {
+        const systemPrompt = agentCtx.get("systemPrompt");
+        if (!systemPrompt)
+          throw new Error("System prompt sections are unavailable in this profile");
+        // Agent-scoped, after first-party guidance and before the persona suffix (10200).
+        systemPrompt.section({ name: "paseo:system-prompt", order: 10100, text: params.systemPrompt });
+      }
+    };
+    // The official factory owns cross-process SessionWriteLease flock arbitration.
+    const handle: HostHandle = params.resume
+      ? await this.ctx
+          .get("agents")
+          .resume({ resumeSessionId: id, agentOptions: model, setup })
+      : await this.ctx.get("agents").create({
+          sessionId: id,
+          meta: { cwd: params.cwd, agentPreset: preset.id },
+          agentOptions: model,
+          setup,
+        });
+    try {
+      if (this.stopping) throw new Error("Bridge is shutting down");
+      if (params.model) handle.agent.session.append("model/selection", model);
+      if (params.permissionPreset)
+        await this.setPermissionPreset(handle.agent, params.permissionPreset);
+      this.owned.set(id, {
+        handle,
+        model,
+        preset: preset.id,
+        selection: modelRef,
+      });
+      return {
+        sessionId: id,
+        cwd: handle.agent.session.header.cwd ?? params.cwd,
+        model,
+        preset: preset.id,
+        permissionPreset: this.ctx
+          .get("permissionPresets")
+          ?.current(handle.agent.session),
+        events: handle.agent.session.snapshotEvents(),
+      };
+    } catch (error) {
+      await handle.dispose();
+      throw error;
+    }
+  }
+
+  private async setPermissionPreset(
+    agent: HostAgent,
+    preset: string,
+  ): Promise<void> {
+    const permission = this.ctx.get("permissionPresets");
+    const commands = this.ctx.get("commands");
+    if (!permission || !commands)
+      throw new Error("Permission presets are unavailable in this profile");
+    if (!permission.names.includes(preset))
+      throw new Error("Unknown permission preset");
+
+    // Use the official live /permission command, as DSH's own surfaces do. It writes session-owned
+    // permission/sandbox/approval events and queues the policy-change notice;
+    // the settings namespace and future-session default remain untouched.
+    const execution = await commands.execute(
+      agent,
+      `/permission ${preset}`,
+      [],
+      new AbortController().signal,
+    );
+    if (!execution || execution.result.kind !== "success") {
+      throw new Error(
+        execution?.result.text ?? "Permission preset command is unavailable",
+      );
+    }
+    if (permission.current(agent.session) !== preset)
+      throw new Error("Permission preset was not applied");
+  }
+
+  private respond(params: Record<string, unknown>): void {
+    const pending = this.interactions.get(
+      nonempty(params.requestId, "requestId"),
+    );
+    if (!pending) throw new Error("Interaction is no longer pending");
+    if (pending.request.kind === "approval") {
+      if (params.outcome !== "allowed-once" && params.outcome !== "rejected")
+        throw new Error("Invalid approval outcome");
+      pending.finish(params.outcome);
+      return;
+    }
+    if (params.outcome === "rejected") {
+      pending.finish();
+      return;
+    }
+    const questions = pending.request.questions ?? [];
+    validateAnswers(questions, params.answers);
+    pending.finish({ answers: params.answers });
+  }
+
+  private canStopRuntime(sessionId: string): Promise<boolean> {
+    return canStopSessionRuntime({
+      ctx: this.ctx,
+      sessionId,
+      rootAgent: this.owned.get(sessionId)?.handle.agent,
+      hasBridgeActivity: () =>
+        this.stopping ||
+        this.opening.has(sessionId) ||
+        this.closing.has(sessionId) ||
+        this.commandAborts.has(sessionId) ||
+        [...this.interactions.values()].some(
+          (pending) => pending.request.sessionId === sessionId,
+        ),
+      hasActiveSubagentRuns: () => this.subagentRuns.hasActiveRuns(),
+    });
+  }
+
+  private close(id: string): Promise<void> {
+    const previous = this.closing.get(id);
+    if (previous) return previous;
+    const task = (async () => {
+      await this.opening.get(id)?.catch(() => undefined);
+      this.commandAborts.get(id)?.abort();
+      for (const pending of this.interactions.values())
+        if (pending.request.sessionId === id) pending.finish();
+      const record = this.owned.get(id);
+      if (record) await record.handle.dispose();
+      this.owned.delete(id);
+      this.tracked.delete(id);
+      this.preapproved.delete(id);
+      this.lastUsage.delete(id);
+      this.subagentRuns.clearRoot(id);
+    })();
+    this.closing.set(id, task);
+    void task.finally(() => this.closing.delete(id)).catch(() => undefined);
+    return task;
+  }
+
+  shutdown(): Promise<{}> {
+    this.stopping = true;
+    return (this.stopTask ??= (async () => {
+      for (const pending of this.interactions.values()) pending.finish();
+      await Promise.allSettled(this.opening.values());
+      const results = await Promise.allSettled(
+        [...this.owned.keys()].map((id) => this.close(id)),
+      );
+      this.subagentRuns.clearAll();
+      for (const dispose of this.subscriptions.splice(0)) dispose();
+      if (results.some((result) => result.status === "rejected"))
+        throw new Error("One or more DSH sessions failed to close");
+      return {};
+    })());
+  }
+}
+
+

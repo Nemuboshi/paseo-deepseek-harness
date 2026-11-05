@@ -1,0 +1,12 @@
+{
+  "id": "paseo-deepseek-harness",
+  "name": "DeepSeek Harness",
+  "icon": "dsh.png",
+  "requirements": {
+    "paseo": ">=0.11.0"
+  },
+  "build": [
+    ["npm", "install", "--include=dev"],
+    ["npm", "run", "build"]
+  ]
+}

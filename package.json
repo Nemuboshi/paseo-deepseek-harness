@@ -1,0 +1,91 @@
+{
+  "name": "paseo-deepseek-harness",
+  "version": "0.2.15",
+  "description": "DeepSeek Harness Direct Provider Plugin for Paseo",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Nemuboshi/paseo-deepseek-harness.git"
+  },
+  "license": "MIT",
+  "keywords": [
+    "paseo-plugin",
+    "paseo",
+    "dsh",
+    "deepseek-harness",
+    "provider"
+  ],
+  "type": "module",
+  "files": [
+    "index.server.ts",
+    "index.client.tsx",
+    "server",
+    "client",
+    "shared",
+    "scripts/build.mjs",
+    "scripts/install-lefthook.mjs",
+    "paseo-plugin.json",
+    "dsh.svg",
+    "dsh.png",
+    "OVERVIEW.md",
+    "!server/**/*.test.ts",
+    "!client/**/*.test.ts",
+    "!server/generated-bridge.ts",
+    "!server/generated-version.ts"
+  ],
+  "peerDependencies": {
+    "@getpaseo/client": "0.14.0",
+    "@getpaseo/protocol": "0.14.0",
+    "react": "~19.1.0",
+    "react-native": ">=0.81.5",
+    "zod": "^4.4.3"
+  },
+  "peerDependenciesMeta": {
+    "@getpaseo/client": {
+      "optional": true
+    },
+    "@getpaseo/protocol": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    },
+    "react-native": {
+      "optional": true
+    },
+    "zod": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@getpaseo/plugin": "0.14.0",
+    "@tanstack/react-query": "^5.105.0",
+    "@types/mdast": "^4.0.4",
+    "@types/node": "^24.0.0",
+    "@types/react": "~19.2.0",
+    "esbuild": "^0.25.0",
+    "lefthook": "^2.1.9",
+    "mdast-util-from-markdown": "^2.0.3",
+    "mdast-util-gfm": "^3.1.0",
+    "micromark-extension-gfm": "^3.0.0",
+    "react-native": "0.81.5",
+    "tsx": "^4.22.4",
+    "typescript": "^5.9.3",
+    "zod": "^4.4.3"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "smoke:bridge": "npm run build && tsx scripts/smoke-bridge.ts",
+    "board": "tsx scripts/board.ts",
+    "agent-loop": "tsx scripts/agent-loop/main.ts",
+    "typecheck": "npm run typecheck:shared && npm run typecheck:server && npm run typecheck:client && npm run typecheck:scripts",
+    "typecheck:shared": "tsc -p tsconfig.shared.json",
+    "typecheck:server": "tsc -p tsconfig.server.json",
+    "typecheck:client": "tsc -p tsconfig.client.json",
+    "typecheck:scripts": "tsc -p tsconfig.scripts.json",
+    "test": "tsx --test \"server/**/*.test.ts\" \"scripts/**/*.test.ts\"",
+    "postinstall": "node scripts/install-lefthook.mjs",
+    "verify:notes": "tsx scripts/verify-agent-note-classification.ts && tsx scripts/verify-agent-note-format.ts && tsx scripts/verify-archived-agent-notes.ts",
+    "verify:docs": "tsx scripts/verify-md-links.ts && tsx scripts/verify-doc-refs.ts",
+    "verify-archived-agent-notes": "tsx scripts/verify-archived-agent-notes.ts"
+  }
+}
