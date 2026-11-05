@@ -5,6 +5,7 @@ import {
   type PlanModeCard,
   type SubagentRunCard,
 } from "../shared/timeline-cards.js";
+import { useSubagentPill } from "./subagent-pill.js";
 
 interface CardProps<Data> {
   item: { data: Data };
@@ -51,7 +52,8 @@ export function GoalCardView({ item }: CardProps<GoalCard>) {
 }
 
 /** One-row card for a subagent run, from start to settle. */
-export function SubagentRunCardView({ item }: CardProps<SubagentRunCard>) {
+export function SubagentRunCardView({ item, agentId, host }: CardProps<SubagentRunCard> & { agentId: string; host: { id: string } }) {
+  useSubagentPill(agentId, host.id);
   const text = item.data.state === "running" ? "Subagent running" : "Subagent finished";
   return <SettingsRow label={item.data.description ? `${text}: ${item.data.description}` : text} />;
 }

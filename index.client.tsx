@@ -1,5 +1,6 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { SETTINGS_SCREEN_ICON } from "./shared/settings.js";
+import { setPillClient } from "./client/subagent-pill.js";
 import DshSettingsScreen from "./client/settings-screen.js";
 import {
   GoalCardView,
@@ -18,6 +19,7 @@ import {
 
 /** Provider presentation comes from the server registration; the client adds the dsh settings screen and timeline cards. */
 export default function contribute(client: PluginClientContext) {
+  setPillClient(client);
   const cleanups = [
     client.addSettingsScreen({
       id: "dsh",
