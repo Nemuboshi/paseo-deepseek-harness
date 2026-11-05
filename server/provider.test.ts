@@ -1196,10 +1196,10 @@ describe("dsh catalog cache key", () => {
     assert.equal(await keyFor({}), await keyFor({ profile: DEFAULT_PROFILE }));
   });
 
-  it("changes with the effective executable, including Paseo's launch when none is configured", async () => {
+  it("changes with the plugin executable and ignores Paseo's launch command", async () => {
     assert.notEqual(await keyFor({ executable: "/a/dsh" }), await keyFor({ executable: "/b/dsh" }));
     const launch = (command: string) => ({ scope: "global" as const, launch: { command, args: [], env: {} } });
-    assert.notEqual(await keyFor({}, launch("/p/dsh")), await keyFor({}, launch("/q/dsh")));
+    assert.equal(await keyFor({}, launch("/p/dsh")), await keyFor({}, launch("/q/dsh")));
     assert.equal(await keyFor({ executable: "/a/dsh" }, launch("/p/dsh")), await keyFor({ executable: "/a/dsh" }, launch("/q/dsh")));
   });
 
@@ -1250,13 +1250,13 @@ describe("dsh provider status", () => {
     assert.deepEqual(seen, ["/opt/dsh"]);
   });
 
-  it("probes the same executable connect would use: override, then launch, then dsh", async () => {
+  it("probes the same executable connect would use: the setting, then dsh from PATH", async () => {
     const launch = { command: "/paseo/dsh", args: ["--flag"], env: { A: "1" } };
     const seen: string[] = [];
     await statusFor("/env/dsh", probe(PLUGIN_VERSION, seen), launch);
     await statusFor(undefined, probe(PLUGIN_VERSION, seen), launch);
     await statusFor(undefined, probe(PLUGIN_VERSION, seen));
-    assert.deepEqual(seen, ["/env/dsh", "/paseo/dsh --flag", "dsh"]);
+    assert.deepEqual(seen, ["/env/dsh", "dsh", "dsh"]);
   });
 
   it("passes the daemon-owned launch environment to the probe", async () => {
@@ -1272,7 +1272,7 @@ describe("dsh provider status", () => {
     const status = await statusFor("/opt/missing-dsh", probe(""));
     assert.equal(status.available, false);
     assert.match(status.diagnostic ?? "", /\/opt\/missing-dsh --version/);
-    assert.match(status.diagnostic ?? "", /agents\.providers\.dsh-pi\.command/);
+    assert.match(status.diagnostic ?? "", /plugin settings/);
     assert.match(status.diagnostic ?? "", /PASEO_DSH_EXECUTABLE/);
     assert.match(status.diagnostic ?? "", /plugin settings/);
   });

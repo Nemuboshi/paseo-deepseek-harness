@@ -3,29 +3,22 @@ import { describe, it } from "node:test";
 import { resolveDshLaunch } from "./dsh-spawn.js";
 import { currentDshConfigured, mergeDshConfigured, readDshSettings, type DshSettingsSource } from "./dsh-config.js";
 
-const launch = { command: "/paseo/dsh", args: ["--flag"] };
-
 /** The executable `status()` and `createBridge` end up with for these inputs. */
 const effectiveExecutable = (
   env: Record<string, string>,
   settings: { executable?: string } | undefined,
-  paseoLaunch?: typeof launch,
-) => resolveDshLaunch(mergeDshConfigured(env, settings).executable, paseoLaunch);
+) => resolveDshLaunch(mergeDshConfigured(env, settings).executable);
 
 describe("dsh executable precedence", () => {
-  it("prefers PASEO_DSH_EXECUTABLE over the setting, Paseo's launch and the default", () => {
-    assert.deepEqual(effectiveExecutable({ PASEO_DSH_EXECUTABLE: "/env/dsh" }, { executable: "/set/dsh" }, launch), {
+  it("prefers PASEO_DSH_EXECUTABLE over the setting and the default", () => {
+    assert.deepEqual(effectiveExecutable({ PASEO_DSH_EXECUTABLE: "/env/dsh" }, { executable: "/set/dsh" }), {
       command: "/env/dsh",
       args: [],
     });
   });
 
-  it("prefers the setting over Paseo's launch", () => {
-    assert.deepEqual(effectiveExecutable({}, { executable: " /set/dsh " }, launch), { command: "/set/dsh", args: [] });
-  });
-
-  it("prefers Paseo's launch (with its arguments) over the default", () => {
-    assert.deepEqual(effectiveExecutable({}, undefined, launch), { command: "/paseo/dsh", args: ["--flag"] });
+  it("prefers the setting over the default", () => {
+    assert.deepEqual(effectiveExecutable({}, { executable: " /set/dsh " }), { command: "/set/dsh", args: [] });
   });
 
   it("falls back to dsh on PATH", () => {
@@ -33,9 +26,9 @@ describe("dsh executable precedence", () => {
   });
 
   it("treats blank values as unset at every step", () => {
-    assert.deepEqual(effectiveExecutable({ PASEO_DSH_EXECUTABLE: "  " }, { executable: "" }, launch), {
-      command: "/paseo/dsh",
-      args: ["--flag"],
+    assert.deepEqual(effectiveExecutable({ PASEO_DSH_EXECUTABLE: "  " }, { executable: "" }), {
+      command: "dsh",
+      args: [],
     });
     assert.deepEqual(effectiveExecutable({ PASEO_DSH_EXECUTABLE: " " }, { executable: "/set/dsh" }), {
       command: "/set/dsh",

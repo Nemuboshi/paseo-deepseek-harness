@@ -70,8 +70,12 @@ The plugin finds `dsh` in this order:
 
 1. The `PASEO_DSH_EXECUTABLE` environment variable.
 2. The `dsh executable` field on the plugin settings screen.
-3. `agents.providers.dsh-pi.command` in the Paseo configuration.
-4. `dsh` on `PATH`.
+3. `dsh` on `PATH`, resolved by the plugin. On Windows this covers a
+   `.cmd`/ `.ps1` wrapper, an npm install, and the DeepSeek Harness desktop
+   app.
+
+The Paseo provider configuration holds only `enabled`. The plugin ignores any
+`command` there, so the executable has one source of truth.
 
 ### Profile
 
