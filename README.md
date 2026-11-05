@@ -10,6 +10,8 @@ Provider ID: `dsh-pi`. Plugin ID: `paseo-deepseek-harness`.
 
 - Paseo 0.11.0 or newer.
 - `dsh` 0.2.x on the same machine as the Paseo daemon.
+- `pnpm` on the daemon host. Paseo runs `pnpm install` and `pnpm run build`
+  when it installs the plugin from source.
 - A configured model route in the DSH profile. The plugin does not store API
   keys.
 
@@ -102,15 +104,15 @@ Changes apply to new sessions. A running session keeps its own `dsh` process.
 ## Development
 
 ```bash
-npm ci
-npm run build
-npm run typecheck
-npm test
+pnpm install
+pnpm run build
+pnpm typecheck
+pnpm test
 ```
 
-Run `npm run verify:notes` and `npm run verify:docs` before you commit. Read
-[development](docs/development.md) for the local plugin loop and the release
-steps.
+Run `pnpm run verify:notes` and `pnpm run verify:docs` before you commit.
+Read [development](docs/development.md) for the local plugin loop and the
+release steps.
 
 ## Documentation
 

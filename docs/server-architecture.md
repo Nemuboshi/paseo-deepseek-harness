@@ -104,12 +104,15 @@ The plugin loads modules from `client/`, `server/` and `shared/` only.
 | `server/dsh-config.ts`, `server/dsh-version.ts` | Settings merge and `dsh --version` probe |
 | `server/dsh/bridge.ts` | Child entry point: stdin lines, RPC dispatch, exit |
 | `server/dsh/service.ts` | RPC methods and host event stream |
+| `server/dsh/service-catalog.ts` | Model, preset and permission catalog for the handshake |
+| `server/dsh/service-listing.ts` | Native session listing and title cache |
 | `server/dsh/service-params.ts` | RPC parameter checks and saved model fold |
 | `server/dsh/subagent-settings.ts`, `server/dsh/runtime-safety.ts` | Subagent model settings, runtime-release rules, subagent run tracking |
 | `shared/bridge-protocol.ts` | RPC methods, notifications, events, snapshots |
 
-`server/dsh/service.ts` holds one `BridgeService` class of about 990 lines.
-Split it only if a real seam appears.
+`server/dsh/service.ts` holds one `BridgeService` class of about 850 lines. The
+catalog and the session listing have their own modules. Split the class further
+only if a real seam appears.
 
 ## Event mapping
 

@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { basename, isAbsolute } from "node:path";
 import type {
-  BridgeCatalog,
   BridgeInitializeResult,
   BridgeMethods,
   BridgeNotifications,
@@ -13,7 +12,6 @@ import type {
   QuestionAnswer,
   SessionOpenParams,
   SessionOpenResult,
-  SessionSummary,
   PromptPart,
   SlashCommand,
 } from "../../shared/bridge-protocol.js";
@@ -28,6 +26,8 @@ import {
   validateModel,
   validateOpen,
 } from "./service-params.js";
+import { readCatalog } from "./service-catalog.js";
+import { SessionListing } from "./service-listing.js";
 import { SubagentSettings } from "./subagent-settings.js";
 import { canStopSessionRuntime, SubagentRunTracker } from "./runtime-safety.js";
 import { slashLine } from "../../shared/bridge-protocol.js";
@@ -102,8 +102,8 @@ export class BridgeService {
   private readonly subscriptions: Array<() => void> = [];
   /** Last usage payload sent per session, so an unchanged fold is not re-sent. */
   private readonly lastUsage = new Map<string, string>();
-  /** Folded titles per session id, so repeated import listings stay cheap. */
-  private readonly titles = new Map<string, string>();
+  /** Native session listing with its own title cache. */
+  private readonly listing = new SessionListing(() => this.ctx.get("sessionQuery"));
   private stopping = false;
   private stopTask?: Promise<{}>;
   private readonly subagentSettings: SubagentSettings;
@@ -336,82 +336,6 @@ export class BridgeService {
     });
   }
 
-  async catalog(): Promise<BridgeCatalog> {
-    const llm = this.ctx.get("llm");
-    const presets = this.ctx.get("agentPresets");
-    const permission = this.ctx.get("permissionPresets");
-    const models: BridgeCatalog["models"] = [];
-    const defaultModel = selection(
-      this.ctx.get("agentDefaultModel")?.currentSelection(),
-    );
-    for (const provider of llm.listProviders()) {
-      try {
-        for (const model of await llm.listModels(provider.id)) {
-          let reasoningEfforts: BridgeCatalog["models"][number]["reasoningEfforts"];
-          try {
-            reasoningEfforts = (
-              await llm.resolveModelInfo?.(provider.id, model.id)
-            )?.reasoning?.efforts;
-          } catch {
-            /* Optional capability discovery may be unavailable for this route. */
-          }
-          models.push({
-            id: `${provider.id}/${model.id}`,
-            provider: provider.id,
-            model: model.id,
-            name: model.name ?? model.id,
-            providerName: provider.name ?? provider.id,
-            reasoningEfforts,
-          });
-        }
-      } catch {
-        /* One unconfigured provider must not hide the other configured routes. */
-      }
-    }
-    if (
-      defaultModel &&
-      !models.some(
-        (model) =>
-          model.provider === defaultModel.provider &&
-          model.model === defaultModel.model,
-      )
-    ) {
-      models.push({
-        id: `${defaultModel.provider}/${defaultModel.model}`,
-        ...defaultModel,
-        name: defaultModel.model,
-        providerName: defaultModel.provider,
-      });
-    }
-    return {
-      models,
-      presets: (await presets.list())
-        .filter((preset) => !preset.broken)
-        .map((preset) => ({
-          id: preset.id,
-          name: preset.name,
-          description: preset.description,
-        })),
-      defaultModel,
-      defaultPreset: presets.defaultId,
-      ...(permission && this.ctx.get("commands")
-        ? {
-            permissionPresets: permission.names.map((id) => {
-              const option = permission.optionOf(id);
-              return {
-                id,
-                name: option.name,
-                ...(option.description
-                  ? { description: option.description }
-                  : {}),
-              };
-            }),
-            defaultPermissionPreset: permission.defaultPreset,
-          }
-        : {}),
-    };
-  }
-
   async handle<K extends keyof BridgeMethods>(
     method: K,
     input: unknown = {},
@@ -450,7 +374,7 @@ export class BridgeService {
             history: true,
             cancel: true,
           },
-          catalog: await this.catalog(),
+          catalog: await readCatalog(this.ctx),
         } satisfies BridgeInitializeResult;
         break;
       }
@@ -463,7 +387,7 @@ export class BridgeService {
         this.subagentSettingsInitializationError = undefined;
         break;
       case "session.list":
-        result = { sessions: await this.listSessions(listParams(params)) };
+        result = { sessions: await this.listing.list(listParams(params)) };
         break;
       case "session.read":
         result = await this.ctx
@@ -616,72 +540,6 @@ export class BridgeService {
         return Object.freeze({ type: "file", attachment });
       }),
     );
-  }
-
-  /**
-   * List native sessions for Paseo's import picker.
-   *
-   * `readTitleSnapshots` decodes each requested session's log to fold its
-   * title, which costs seconds per hundred sessions on a large history, so
-   * titles are folded only for the rows this call returns: cwd and query
-   * filter first, then newest first, then the limit. Folded titles are cached
-   * for this bridge's lifetime; a title renamed outside Paseo keeps its cached
-   * value until the bridge is replaced, while live sessions carry their header
-   * title regardless.
-   */
-  private async listSessions(
-    params: { cwd?: string; query?: string; limit?: number },
-  ): Promise<SessionSummary[]> {
-    const query = this.ctx.get("sessionQuery");
-    const records = await query.listSessions();
-    let sessions = records
-      .map((record) => ({ ...record.header }))
-      .filter((session) => !params.cwd || session.cwd === params.cwd);
-    if (params.query) {
-      // A title query needs every title, so this path folds the whole history.
-      await this.foldTitles(query, sessions);
-      const needle = params.query.toLowerCase();
-      sessions = sessions.filter(
-        (session) =>
-          session.title?.toLowerCase().includes(needle) ||
-          session.id.toLowerCase().includes(needle),
-      );
-    }
-    sessions.sort((left, right) => right.createdAt - left.createdAt);
-    if (params.limit !== undefined && sessions.length > params.limit)
-      sessions = sessions.slice(0, params.limit);
-    await this.foldTitles(query, sessions);
-    return sessions;
-  }
-
-  /** Fill in cached titles, reading only the sessions this bridge has not folded yet. */
-  private async foldTitles(
-    query: HostServices["sessionQuery"],
-    sessions: SessionSummary[],
-  ): Promise<void> {
-    if (typeof query.readTitleSnapshots !== "function") return;
-    // The official bulk title read owns live/cold source and validation. A
-    // header that already carries a title is live and needs no fold at all.
-    const missing = sessions.filter(
-      (session) => !session.title && !this.titles.has(session.id),
-    );
-    if (missing.length > 0) {
-      const titles = await query.readTitleSnapshots(
-        missing.map((session) => session.id),
-      );
-      for (let i = 0; i < missing.length; i++) {
-        const result = titles[i];
-        const title =
-          result?.status === "fulfilled"
-            ? result.value.title?.title
-            : undefined;
-        if (typeof title === "string") this.titles.set(missing[i]!.id, title);
-      }
-    }
-    for (const session of sessions) {
-      const title = this.titles.get(session.id);
-      if (title !== undefined) session.title = title;
-    }
   }
 
   /** Registered commands first; a skill never shadows a command of the same name. */

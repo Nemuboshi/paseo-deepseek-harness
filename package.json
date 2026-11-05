@@ -15,23 +15,6 @@
     "provider"
   ],
   "type": "module",
-  "files": [
-    "index.server.ts",
-    "index.client.tsx",
-    "server",
-    "client",
-    "shared",
-    "scripts/build.mjs",
-    "scripts/install-lefthook.mjs",
-    "paseo-plugin.json",
-    "dsh.svg",
-    "dsh.png",
-    "OVERVIEW.md",
-    "!server/**/*.test.ts",
-    "!client/**/*.test.ts",
-    "!server/generated-bridge.ts",
-    "!server/generated-version.ts"
-  ],
   "peerDependencies": {
     "@getpaseo/client": "0.14.0",
     "@getpaseo/protocol": "0.14.0",
@@ -74,10 +57,10 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
-    "smoke:bridge": "npm run build && tsx scripts/smoke-bridge.ts",
+    "smoke:bridge": "node scripts/build.mjs && tsx scripts/smoke-bridge.ts",
     "board": "tsx scripts/board.ts",
     "agent-loop": "tsx scripts/agent-loop/main.ts",
-    "typecheck": "npm run typecheck:shared && npm run typecheck:server && npm run typecheck:client && npm run typecheck:scripts",
+    "typecheck": "tsc -p tsconfig.shared.json && tsc -p tsconfig.server.json && tsc -p tsconfig.client.json && tsc -p tsconfig.scripts.json",
     "typecheck:shared": "tsc -p tsconfig.shared.json",
     "typecheck:server": "tsc -p tsconfig.server.json",
     "typecheck:client": "tsc -p tsconfig.client.json",
@@ -87,5 +70,6 @@
     "verify:notes": "tsx scripts/verify-agent-note-classification.ts && tsx scripts/verify-agent-note-format.ts && tsx scripts/verify-archived-agent-notes.ts",
     "verify:docs": "tsx scripts/verify-md-links.ts && tsx scripts/verify-doc-refs.ts",
     "verify-archived-agent-notes": "tsx scripts/verify-archived-agent-notes.ts"
-  }
+  },
+  "packageManager": "pnpm@12.9.0"
 }

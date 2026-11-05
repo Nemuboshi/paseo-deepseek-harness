@@ -6,7 +6,15 @@
     "paseo": ">=0.11.0"
   },
   "build": [
-    ["npm", "install", "--include=dev"],
-    ["npm", "run", "build"]
+    [
+      "pnpm",
+      "install",
+      "--frozen-lockfile"
+    ],
+    [
+      "pnpm",
+      "run",
+      "build"
+    ]
   ]
 }

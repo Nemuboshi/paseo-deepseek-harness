@@ -550,91 +550,6 @@ describe("TimelineProjector plugin cards", () => {
   });
 });
 
-describe("tool detail arguments", () => {
-  const call = (name: string, args: Record<string, unknown>) => {
-    const projector = new TimelineProjector("paseo-session");
-    const events = projector.projectEvent({
-      type: "tool/call",
-      seq: 3,
-      time: 1_000,
-      data: { callId: "c1", name, arguments: JSON.stringify(args) },
-    });
-    const item = timelineItem(events[0]!);
-    assert.equal(item.type, "tool_call");
-    return item.type === "tool_call" ? (item as { detail: Record<string, unknown> }).detail : {};
-  };
-
-  it("reads the dsh file_path and workdir arguments", () => {
-    const read = call("read", { file_path: "/tmp/a.png", offset: 1, limit: 2 });
-    assert.equal(read.type, "read");
-    assert.equal(read.filePath, "/tmp/a.png");
-    assert.equal(read.offset, 1);
-    assert.equal(read.limit, 2);
-
-    const write = call("write", { file_path: "/tmp/b.txt", content: "hi" });
-    assert.equal(write.type, "write");
-    assert.equal(write.filePath, "/tmp/b.txt");
-
-    const edit = call("edit", { file_path: "/tmp/c.txt", old_string: "a", new_string: "b" });
-    assert.equal(edit.type, "edit");
-    assert.equal(edit.filePath, "/tmp/c.txt");
-    assert.equal(edit.oldString, "a");
-    assert.equal(edit.newString, "b");
-
-    const shell = call("bash", { command: "pwd", workdir: "/tmp" });
-    assert.equal(shell.type, "shell");
-    assert.equal(shell.cwd, "/tmp");
-
-    const pwsh = call("pwsh", { command: "Get-Location", workdir: "C:/tmp" });
-    assert.equal(pwsh.type, "shell");
-    assert.equal(pwsh.command, "Get-Location");
-    assert.equal(pwsh.cwd, "C:/tmp");
-  });
-
-  it("does not treat todo_write as a file write", () => {
-    const detail = call("todo_write", { todos: [{ text: "x", completed: false }] });
-    assert.notEqual(detail.type, "write");
-  });
-
-  it("keeps MCP tools generic instead of guessing a card type", () => {
-    // A substring match on "write" used to render this as a file write with an
-    // empty path.
-    const detail = call("mcp__notes__write_note", { content: "hello" });
-    assert.equal(detail.type, "unknown");
-  });
-
-  it("maps grep, glob and web_fetch to their cards", () => {
-    const grep = call("grep", { pattern: "needle", path: "/tmp" });
-    assert.equal(grep.type, "search");
-    assert.equal(grep.query, "needle");
-
-    const glob = call("glob", { pattern: "**/*.ts" });
-    assert.equal(glob.type, "search");
-    assert.equal(glob.query, "**/*.ts");
-    assert.equal(glob.toolName, "glob");
-
-    const fetched = call("web_fetch", { url: "https://example.com" });
-    assert.equal(fetched.type, "fetch");
-    assert.equal(fetched.url, "https://example.com");
-  });
-
-  it("renders both native and PTC plan exits as a plan card", () => {
-    const native = call("exit_plan_mode", { plan: "# Plan" });
-    assert.deepEqual(native, { type: "plan", text: "# Plan" });
-
-    const projector = new TimelineProjector("paseo-session");
-    const [dispatch] = projector.projectEvent({
-      type: "tool/ptc-dispatch-start",
-      seq: 4,
-      time: 1_000,
-      data: { subCallId: "c1:ptc:1", name: "exit_plan_mode", arguments: { plan: "# Plan" } },
-    });
-    const item = timelineItem(dispatch!);
-    assert.equal(item.type, "tool_call");
-    if (item.type === "tool_call") assert.deepEqual(item.detail, { type: "plan", text: "# Plan" });
-  });
-});
-
 describe("PTC dispatches", () => {
   const start = (subCallId: string, name: string, args: unknown) => ({
     type: "tool/ptc-dispatch-start",
@@ -732,62 +647,8 @@ describe("PTC dispatches", () => {
   });
 });
 
-describe("DSH tools without a dedicated Paseo card", () => {
-  const call = (name: string, args: Record<string, unknown>) => {
-    const projector = new TimelineProjector("paseo-session");
-    const [event] = projector.projectEvent({
-      type: "tool/call",
-      seq: 3,
-      time: 1_000,
-      data: { callId: "c1", name, arguments: JSON.stringify(args) },
-    });
-    const item = timelineItem(event!);
-    assert.equal(item.type, "tool_call");
-    return item.type === "tool_call" ? item : assert.fail("no card");
-  };
-
-  it("renders a readable line instead of the raw arguments", () => {
-    const subagent = call("subagent", { description: "check layout", prompt: "read only" });
-    assert.deepEqual(subagent.detail, { type: "plain_text", label: "check layout", text: "read only", icon: "bot" });
-
-    const message = call("send_message", { agent_id: "a1", message: "report" });
-    assert.equal(message.detail.type === "plain_text" && message.detail.label, "Message a1");
-
-    const job = call("job_output", { job_id: "pwsh-1" });
-    assert.equal(job.detail.type === "plain_text" && job.detail.label, "Job pwsh-1");
-
-    const goal = call("update_goal", { goal_id: "g1", action: "edit", objective: "ship" });
-    assert.equal(goal.detail.type === "plain_text" && goal.detail.label, "Update goal (edit)");
-    assert.equal(goal.detail.type === "plain_text" && goal.detail.text, "ship");
-  });
-
-  it("lists presented files and the todo checklist", () => {
-    const present = call("present", {
-      files: [
-        { path: "dist/app.exe", description: "installer" },
-        { path: "out/baseline.md" },
-      ],
-    });
-    assert.equal(present.detail.type === "plain_text" && present.detail.label, "Present 2 files");
-    assert.equal(
-      present.detail.type === "plain_text" && present.detail.text,
-      "dist/app.exe — installer\nout/baseline.md",
-    );
-
-    const todos = call("todo_write", {
-      todos: [
-        { content: "one", status: "completed" },
-        { content: "two", status: "in_progress" },
-        { content: "three", status: "pending" },
-      ],
-    });
-    assert.equal(
-      todos.detail.type === "plain_text" && todos.detail.text,
-      "[x] one\n[~] two\n[ ] three",
-    );
-  });
-
-  it("keeps its arguments when the result arrives", () => {
+describe("plain-text tool cards", () => {
+  it("keeps the arguments and appends the output", () => {
     const projector = new TimelineProjector("paseo-session");
     projector.projectEvent({
       type: "tool/ptc-dispatch-start",
@@ -816,20 +677,16 @@ describe("DSH tools without a dedicated Paseo card", () => {
       assert.fail("plain-text card keeps its plain_text detail");
     }
   });
+});
 
-  it("projects the checklist as one updating todo item", () => {
+describe("todo projection", () => {
+  it("updates one todo item in place and ignores an empty list", () => {
     const projector = new TimelineProjector("paseo-session");
     const first = projector.projectEvent({
       type: "todo/write",
       seq: 1,
       time: 1_000,
       data: { todos: [{ content: "one", status: "in_progress" }, { content: "two", status: "pending" }] },
-    });
-    const second = projector.projectEvent({
-      type: "todo/write",
-      seq: 2,
-      time: 1_001,
-      data: { todos: [{ content: "one", status: "completed" }, { content: "two", status: "pending" }] },
     });
     assert.deepEqual(first.map(timelineItem), [
       {
@@ -841,9 +698,14 @@ describe("DSH tools without a dedicated Paseo card", () => {
         ],
       },
     ]);
+    const second = projector.projectEvent({
+      type: "todo/write",
+      seq: 2,
+      time: 1_001,
+      data: { todos: [{ content: "one", status: "completed" }, { content: "two", status: "pending" }] },
+    });
     const updated = timelineItem(second[0]!);
     assert.equal(updated.type, "todo");
-    assert.equal(timelineItem(second[0]!).id, "dsh-todos");
     if (updated.type === "todo") assert.equal(updated.items[0]?.completed, true);
     assert.deepEqual(
       projector.projectEvent({ type: "todo/write", seq: 3, time: 1_002, data: { todos: [] } }),

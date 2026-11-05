@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { defaultDshCommand, resolveDshSpawn, type DshSpawnHost } from "./dsh-spawn.js";
+import { defaultDshCommand, resolveDshSpawn, type DshSpawnHost , resolveDshExecutable, resolveDshLaunch } from "./dsh-spawn.js";
 
 const NPM = "C:\\Users\\me\\AppData\\Roaming\\npm";
 const BIN_JS = `${NPM}\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js`;
@@ -162,3 +162,17 @@ describe("defaultDshCommand", () => {
     assert.equal(defaultDshCommand(PATH_ENV, windows([DESKTOP_EXE, DESKTOP_ASAR])), "dsh");
   });
 });
+
+describe("resolveDshLaunch", () => {
+  const launch = { command: "/opt/bin/dsh", args: ["run", "dsh"] };
+
+  it("prefers PASEO_DSH_EXECUTABLE, then Paseo's launch, then dsh from PATH", () => {
+    assert.deepEqual(resolveDshLaunch(" /custom/dsh ", launch), { command: "/custom/dsh", args: [] });
+    assert.deepEqual(resolveDshLaunch(undefined, launch), launch);
+    assert.deepEqual(resolveDshLaunch("   ", launch), launch);
+    assert.deepEqual(resolveDshLaunch(undefined), { command: "dsh", args: [] });
+    assert.equal(resolveDshExecutable("", launch), "/opt/bin/dsh");
+    assert.equal(resolveDshExecutable(undefined), "dsh");
+  });
+});
+

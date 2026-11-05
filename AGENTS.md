@@ -8,7 +8,7 @@ code.
 
 1. Read `README.md`.
 2. Read the page in `docs/` that owns the area you will change.
-3. Run `npm ci` and `npm run build` once.
+3. Run `pnpm install` and `pnpm run build` once.
 
 ## Layout
 
@@ -44,10 +44,10 @@ owner of each module. Use it to decide where new code goes.
 Run these before you commit:
 
 ```bash
-npm run typecheck
-npm test
-npm run verify:notes
-npm run verify:docs
+pnpm typecheck
+pnpm test
+pnpm run verify:notes
+pnpm run verify:docs
 ```
 
 A hook runs the note and doc gates on commit. Fix the cause. Do not bypass the

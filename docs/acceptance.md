@@ -7,9 +7,9 @@ result: a command output, a screenshot, or a session log.
 
 | Check | Command |
 |---|---|
-| Gates | `npm run build`, `npm run typecheck`, `npm test`, `npm run verify:notes`, `npm run verify:docs` |
-| Bridge handshake against a real `dsh` | `npm run smoke:bridge` |
-| Paseo 0.14 host flow | `npm run test -- server/provider.test.ts` with the 0.14 fixture |
+| Gates | `pnpm run build`, `pnpm typecheck`, `pnpm test`, `pnpm run verify:notes`, `pnpm run verify:docs` |
+| Bridge handshake against a real `dsh` | `pnpm run smoke:bridge` |
+| Paseo 0.14 host flow | `pnpm test` runs `scripts/paseo-014.e2e.test.ts` |
 
 ## Manual, with a real model
 

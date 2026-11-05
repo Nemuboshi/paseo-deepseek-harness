@@ -3,11 +3,11 @@
 ## Setup
 
 ```bash
-npm ci
-npm run build
+pnpm install
+pnpm run build
 ```
 
-`npm run build` does three things:
+`pnpm run build` does three things:
 
 1. Bundles `server/dsh/bridge.ts` to `dist/dsh-bridge.mjs`.
 2. Writes the bundle as a string into `server/generated-bridge.ts`.
@@ -24,15 +24,15 @@ relative import outside those directories fails the plugin load.
 
 | Command | Checks |
 |---|---|
-| `npm run build` | Bridge bundle and generated modules |
-| `npm run typecheck` | Shared, server, client and script projects |
-| `npm test` | Unit and end-to-end suites |
-| `npm run verify:notes` | `.agents/notes/` layout and format |
-| `npm run verify:docs` | Relative links and source doc references |
+| `pnpm run build` | Bridge bundle and generated modules |
+| `pnpm typecheck` | Shared, server, client and script projects |
+| `pnpm test` | Unit and end-to-end suites |
+| `pnpm run verify:notes` | `.agents/notes/` layout and format |
+| `pnpm run verify:docs` | Relative links and source doc references |
 
 A git hook runs the note and doc gates before each commit. Install it with
-`npm ci`; the hook comes from `lefthook.yml`. CI runs every gate on each push
-and pull request.
+`pnpm install`; the hook comes from `lefthook.yml`. CI runs every gate on each
+push and pull request.
 
 ## Local plugin loop
 
@@ -69,8 +69,11 @@ paseo plugin logs paseo-deepseek-harness
 |---|---|
 | `server/provider.test.ts` | Provider registration, dispatch, sessions, configuration |
 | `server/timeline.test.ts` | Event and stream projection to Paseo items |
+| `server/tool-detail.test.ts` | Tool name to card detail, and output merge |
 | `server/dsh/service.test.ts` | Bridge RPC methods and host events |
-| `server/bridge-client.test.ts` | Profile, patch, handshake and RPC client |
+| `server/dsh-profile.test.ts` | Profile, patch, row audit and handshake |
+| `server/dsh-spawn.test.ts` | Command and executable resolution |
+| `server/bridge-client.test.ts` | JSONL line parsing |
 | `server/e2e-interaction.test.ts` | Approvals, questions and turns against a fake `dsh` |
 | `scripts/*.test.ts` | Repository gates and the maintainer scripts |
 
@@ -88,16 +91,14 @@ environment limit and run the suite on Linux CI before a release.
 3. Run every gate.
 4. Commit, then tag the commit `v<version>`.
 
-This repository has no publish workflow. It publishes nothing to npm. To
-publish, add a workflow with your own credentials, or publish by hand:
+This repository publishes nothing to npm. A release is a Git tag on main.
+Paseo installs the plugin from the repository URL, so no package registry
+is needed.
 
 ```bash
-npm pack --dry-run
-npm publish
+git tag v0.2.15
+git push origin v0.2.15
 ```
-
-The install from Git needs no npm package. Paseo can install the plugin from
-the repository URL directly.
 
 ## Code rules
 
