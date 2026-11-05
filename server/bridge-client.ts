@@ -12,7 +12,7 @@ import {
   createBridgePatch,
   ensureDshProfile,
 } from "./dsh-profile.js";
-import { describeDshLaunch, resolveDshLaunch, spawnDsh, type DshLaunch } from "./dsh-spawn.js";
+import { resolveDshLaunch, spawnDsh, type DshLaunch } from "./dsh-spawn.js";
 import type { ProviderLaunch } from "@getpaseo/plugin/server/provider";
 import type {
   BridgeInitializeResult,
@@ -95,7 +95,7 @@ interface PendingRequest {
 
 export async function launchDshBridge(options: LaunchBridgeOptions): Promise<DshBridge> {
   const profile = options.profile?.trim() || DEFAULT_PROFILE;
-  const launch = resolveDshLaunch(options.executable, options.providerLaunch);
+  const launch = resolveDshLaunch(options.executable);
   const env = { ...(options.providerLaunch?.env ?? process.env), ...options.env };
   await ensureDshProfile({ executable: launch.command, args: launch.args, profile, env });
   await assertSurfaceRowsPresent({

@@ -13,7 +13,7 @@ interface SettingsTarget {
 
 /** Bind a draft to its effective installation and profile without exposing launch credentials. */
 export function subagentSettingsTargetKey({ configured, launch }: SettingsTarget): string {
-  const command = resolveDshLaunch(configured.executable, launch);
+  const command = resolveDshLaunch(configured.executable);
   return createHash("sha256").update(JSON.stringify([
     command,
     configured.profile ?? DEFAULT_PROFILE,

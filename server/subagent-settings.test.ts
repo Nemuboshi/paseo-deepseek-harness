@@ -63,11 +63,10 @@ test("a failed RPC still releases its bridge", async () => {
   assert.equal(f.closed, 1);
 });
 
-test("draft identity includes the executable, launch arguments and DSH home", () => {
+test("draft identity includes the executable, the profile and DSH home", () => {
   const base = { configured: {}, launch: { command: "dsh", args: [], env: { DSH_HOME: "/one" } } };
   const original = subagentSettingsTargetKey(base);
   assert.notEqual(original, subagentSettingsTargetKey({ ...base, configured: { executable: "/other/dsh" } }));
-  assert.notEqual(original, subagentSettingsTargetKey({ ...base, launch: { ...base.launch, args: ["--option"] } }));
   assert.notEqual(original, subagentSettingsTargetKey({ ...base, launch: { ...base.launch, env: { DSH_HOME: "/two" } } }));
 });
 
