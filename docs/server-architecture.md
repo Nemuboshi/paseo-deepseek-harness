@@ -72,12 +72,8 @@ The plugin resolves `dsh` in this order:
 1. `PASEO_DSH_EXECUTABLE`, if it is not blank. This value wins over the launch
    command, so the launch arguments are dropped.
 2. The `dsh executable` field on the settings screen. Same rule.
-3. `dsh` on `PATH`. `spawnDsh` resolves it, including a Windows
-   `.cmd`/`.ps1` wrapper, an npm layout and the desktop app.
-
-Paseo's provider configuration contributes only `enabled` and the daemon
-environment. The plugin reads no `command` from it, so a Paseo config edit
-cannot change which executable runs.
+3. `agents.providers.dsh-pi.command` from the Paseo configuration.
+4. `dsh` on `PATH`.
 
 `resolveDshLaunch` in `server/dsh-spawn.ts` applies this order.
 `status()` and `connect` use the same resolution.

@@ -164,12 +164,15 @@ describe("defaultDshCommand", () => {
 });
 
 describe("resolveDshLaunch", () => {
-  it("uses the plugin setting and otherwise lets the spawn resolve dsh", () => {
-    assert.deepEqual(resolveDshLaunch(" /custom/dsh "), { command: "/custom/dsh", args: [] });
-    assert.deepEqual(resolveDshLaunch("   "), { command: "dsh", args: [] });
+  const launch = { command: "/opt/bin/dsh", args: ["run", "dsh"] };
+
+  it("prefers PASEO_DSH_EXECUTABLE, then Paseo's launch, then dsh from PATH", () => {
+    assert.deepEqual(resolveDshLaunch(" /custom/dsh ", launch), { command: "/custom/dsh", args: [] });
+    assert.deepEqual(resolveDshLaunch(undefined, launch), launch);
+    assert.deepEqual(resolveDshLaunch("   ", launch), launch);
     assert.deepEqual(resolveDshLaunch(undefined), { command: "dsh", args: [] });
-    assert.equal(resolveDshExecutable("/custom/dsh"), "/custom/dsh");
-    assert.equal(resolveDshExecutable(""), "dsh");
+    assert.equal(resolveDshExecutable("", launch), "/opt/bin/dsh");
+    assert.equal(resolveDshExecutable(undefined), "dsh");
   });
 });
 

@@ -1,6 +1,7 @@
 import { spawn, type SpawnOptions } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
+import type { ProviderLaunch } from "@getpaseo/plugin/server/provider";
 
 type Env = Readonly<Record<string, string | undefined>>;
 
@@ -145,14 +146,16 @@ export interface DshLaunch {
  * `PATH`. `launch.args` belong to `launch.command`, so they are dropped when
  * the environment variable wins.
  */
-export function resolveDshLaunch(configured: string | undefined): DshLaunch {
+export function resolveDshLaunch(configured: string | undefined, launch?: Pick<ProviderLaunch, "command" | "args">): DshLaunch {
   const override = configured?.trim();
-  return override ? { command: override, args: [] } : { command: "dsh", args: [] };
+  if (override) return { command: override, args: [] };
+  if (launch) return { command: launch.command, args: launch.args };
+  return { command: "dsh", args: [] };
 }
 
 /** The `dsh` executable chosen by `resolveDshLaunch`. */
-export function resolveDshExecutable(configured: string | undefined): string {
-  return resolveDshLaunch(configured).command;
+export function resolveDshExecutable(configured: string | undefined, launch?: Pick<ProviderLaunch, "command" | "args">): string {
+  return resolveDshLaunch(configured, launch).command;
 }
 
 /** Text for diagnostics: the command line with its leading arguments. */

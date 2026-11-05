@@ -52,7 +52,7 @@ export function createDshProvider(options: DshProviderOptions): ProviderRegistra
     getCatalogCacheKey: async (request) => {
       options.observeLaunch?.(request.launch);
       const configured = (await options.configured?.()) ?? {};
-      const launch = describeDshLaunch(resolveDshLaunch(configured.executable));
+      const launch = describeDshLaunch(resolveDshLaunch(configured.executable, request.launch));
       const scope = request.scope === "workspace" ? request.cwd : "global";
       return JSON.stringify(["dsh-pi", scope, launch, configured.profile ?? DEFAULT_PROFILE]);
     },
@@ -60,7 +60,7 @@ export function createDshProvider(options: DshProviderOptions): ProviderRegistra
     async status(request) {
       options.observeLaunch?.(request?.launch);
       return dshStatus(
-        resolveDshLaunch((await options.configured?.())?.executable),
+        resolveDshLaunch((await options.configured?.())?.executable, request?.launch),
         request?.launch?.env,
         options.detectDshVersion ?? detectDshVersion,
       );
@@ -106,7 +106,7 @@ async function dshStatus(
       available: false,
       diagnostic:
         `Could not run "${describeDshLaunch(launch)} --version". Install dsh, ` +
-        `set the executable in the DeepSeek Harness plugin settings, set PASEO_DSH_EXECUTABLE, ` +
+        `set agents.providers.dsh-pi.command in Paseo config, set the executable in the DeepSeek Harness plugin settings, or set PASEO_DSH_EXECUTABLE, ` +
         `then restart the Paseo daemon.`,
     };
   }
