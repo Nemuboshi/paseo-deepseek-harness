@@ -181,14 +181,15 @@ describe("pnpm wrapper", () => {
   const text = '@node "%~dp0/../global/v11/hash/node_modules/@deepseek-ai/dsh/lib/bin.js" %*';
   const fake = (read: string, existing: string[]) => ({
     platform: "win32" as const,
-    exists: (file: string) => existing.some((known) => path.normalize(known) === path.normalize(file)),
+    exists: (file: string) =>
+      existing.some((known) => path.win32.normalize(known) === path.win32.normalize(file)),
     readText: () => read,
   });
 
   it("runs the bin.js its cmd wrapper names", () => {
     const host = fake(text, [wrapper, binJs, "C:/pnpm/bin/node.exe"]);
     const spawn = wrapperSpawn(wrapper, ["--profile", "paseo"], {}, host, host.readText)!;
-    assert.equal(path.normalize(spawn.command), path.normalize("C:/pnpm/bin/node.exe"));
+    assert.equal(path.win32.normalize(spawn.command), path.win32.normalize("C:/pnpm/bin/node.exe"));
     assert.deepEqual(spawn.args, [path.win32.normalize(binJs), "--profile", "paseo"]);
   });
 
@@ -207,6 +208,6 @@ describe("pnpm wrapper", () => {
   it("finds the wrapper through PATH for a bare dsh", () => {
     const host = fake(text, [wrapper, binJs, "C:/pnpm/bin/node.exe"]);
     const spawn = resolveDshSpawn("dsh", [], { PATH: "C:/pnpm/bin" }, host, host.readText);
-    assert.equal(path.normalize(spawn.command), path.normalize("C:/pnpm/bin/node.exe"));
+    assert.equal(path.win32.normalize(spawn.command), path.win32.normalize("C:/pnpm/bin/node.exe"));
   });
 });
