@@ -1,5 +1,5 @@
 import { spawn, type SpawnOptions } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 type Env = Readonly<Record<string, string | undefined>>;
@@ -47,6 +47,7 @@ export function resolveDshSpawn(
   args: readonly string[],
   env: Env,
   host: DshSpawnHost = defaultHost,
+  readText: (file: string) => string = (file) => readFileSync(file, "utf8"),
 ): DshSpawn {
   const passthrough = { command, args: [...args], env };
   if (host.platform !== "win32") return passthrough;
@@ -61,6 +62,7 @@ export function resolveDshSpawn(
   const directory = path.win32.dirname(found.path);
   return (
     npmSpawn(directory, args, env, host) ??
+    wrapperSpawn(found.path, args, env, host, readText) ??
     // <install>\resources\runtime\cli\bin\dsh.cmd
     desktopSpawn(path.win32.resolve(directory, "..", "..", "..", ".."), args, env, host) ??
     passthrough
@@ -99,6 +101,43 @@ function desktopSpawn(install: string, args: readonly string[], env: Env, host: 
   if (!host.exists(exe) || !host.exists(asar)) return undefined;
   const cli = path.win32.join(asar, "dsh", "node_modules", "@deepseek-ai", "dsh-desktop-host", "lib", "cli.js");
   return { command: exe, args: ["--expose-internals", cli, ...args], env: { ...env, ELECTRON_RUN_AS_NODE: "1" } };
+}
+
+const SEPARATOR = String.fromCharCode(92);
+
+/**
+ * The wrapper's own command line: a `.cmd` that runs `node <bin.js>` names that
+ * script, and pnpm's global install names it relative to the wrapper. Reading the
+ * wrapper beats guessing a directory layout.
+ */
+export function wrapperSpawn(
+  wrapper: string,
+  args: readonly string[],
+  env: Env,
+  host: DshSpawnHost,
+  readText: (file: string) => string,
+): DshSpawn | undefined {
+  let text: string;
+  try {
+    text = readText(wrapper);
+  } catch {
+    return undefined;
+  }
+  const flattened = text.split(SEPARATOR).join("/");
+  const marker = "@deepseek-ai/dsh/lib/bin.js";
+  const at = flattened.lastIndexOf(marker);
+  if (at < 0) return undefined;
+  let start = at;
+  while (start > 0 && !"\"'\r\n".includes(flattened[start - 1]!)) start -= 1;
+  const directory = path.win32.dirname(wrapper);
+  const raw = flattened
+    .slice(start, at + marker.length)
+    .replace(/^node\s+/u, "")
+    .replace(/%~dp0/giu, `${directory.split(SEPARATOR).join("/")}/`);
+  const binJs = path.win32.normalize(raw);
+  if (!host.exists(binJs)) return undefined;
+  const node = path.win32.join(directory, "node.exe");
+  return { command: host.exists(node) ? node : "node", args: [binJs, ...args], env };
 }
 
 type Found = { kind: "executable" } | { kind: "wrapper"; path: string } | { kind: "missing" };

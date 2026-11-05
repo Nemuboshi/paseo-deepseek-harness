@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { defaultDshCommand, resolveDshSpawn, type DshSpawnHost , resolveDshExecutable, resolveDshLaunch } from "./dsh-spawn.js";
+import path from "node:path";
+import { defaultDshCommand, resolveDshSpawn, resolveDshExecutable, resolveDshLaunch, wrapperSpawn, type DshSpawnHost } from "./dsh-spawn.js";
 
 const NPM = "C:\\Users\\me\\AppData\\Roaming\\npm";
 const BIN_JS = `${NPM}\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js`;
@@ -173,3 +174,39 @@ describe("resolveDshLaunch", () => {
   });
 });
 
+
+describe("pnpm wrapper", () => {
+  const wrapper = "C:/pnpm/bin/dsh.cmd";
+  const binJs = "C:/pnpm/global/v11/hash/node_modules/@deepseek-ai/dsh/lib/bin.js";
+  const text = '@node "%~dp0/../global/v11/hash/node_modules/@deepseek-ai/dsh/lib/bin.js" %*';
+  const fake = (read: string, existing: string[]) => ({
+    platform: "win32" as const,
+    exists: (file: string) => existing.some((known) => path.normalize(known) === path.normalize(file)),
+    readText: () => read,
+  });
+
+  it("runs the bin.js its cmd wrapper names", () => {
+    const host = fake(text, [wrapper, binJs, "C:/pnpm/bin/node.exe"]);
+    const spawn = wrapperSpawn(wrapper, ["--profile", "paseo"], {}, host, host.readText)!;
+    assert.equal(path.normalize(spawn.command), path.normalize("C:/pnpm/bin/node.exe"));
+    assert.deepEqual(spawn.args, [path.win32.normalize(binJs), "--profile", "paseo"]);
+  });
+
+  it("falls back to node when no node.exe sits beside the wrapper", () => {
+    const host = fake(text, [wrapper, binJs]);
+    const spawn = wrapperSpawn(wrapper, [], {}, host, host.readText)!;
+    assert.equal(spawn.command, "node");
+    assert.deepEqual(spawn.args, [path.win32.normalize(binJs)]);
+  });
+
+  it("leaves a wrapper without a dsh bin.js alone", () => {
+    const host = fake("@echo off\n", [wrapper]);
+    assert.equal(wrapperSpawn(wrapper, [], {}, host, host.readText), undefined);
+  });
+
+  it("finds the wrapper through PATH for a bare dsh", () => {
+    const host = fake(text, [wrapper, binJs, "C:/pnpm/bin/node.exe"]);
+    const spawn = resolveDshSpawn("dsh", [], { PATH: "C:/pnpm/bin" }, host, host.readText);
+    assert.equal(path.normalize(spawn.command), path.normalize("C:/pnpm/bin/node.exe"));
+  });
+});
