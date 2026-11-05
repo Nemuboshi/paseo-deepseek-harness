@@ -3,6 +3,7 @@ import {
   type GoalCard,
   type PermissionPresetCard,
   type PlanModeCard,
+  type SubagentRunCard,
 } from "../shared/timeline-cards.js";
 
 interface CardProps<Data> {
@@ -47,4 +48,10 @@ export function PermissionPresetCardView({ item }: CardProps<PermissionPresetCar
 /** One-row card for a goal change or an automatic goal round. */
 export function GoalCardView({ item }: CardProps<GoalCard>) {
   return <SettingsRow label={goalCardText(item.data)} />;
+}
+
+/** One-row card for a subagent run, from start to settle. */
+export function SubagentRunCardView({ item }: CardProps<SubagentRunCard>) {
+  const text = item.data.state === "running" ? "Subagent running" : "Subagent finished";
+  return <SettingsRow label={item.data.description ? `${text}: ${item.data.description}` : text} />;
 }

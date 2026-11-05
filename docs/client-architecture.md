@@ -44,6 +44,7 @@ was registered with.
 | `plan-mode` | `{ active }` | A short line with the new plan-mode state |
 | `permission-preset` | `{ preset }` | A short line with the new permission preset |
 | `goal` | `{ operation, objective?, round?, maxRounds?, reason? }` | A short line with the goal change |
+| `subagent-run` | `{ childSessionId, description?, state }` | A short line per subagent, running or finished |
 
 The cards use `PLUGIN_ID` from the same file. The server emits a card only when
 the host offers the `timeline.plugin` capability. Without that capability the

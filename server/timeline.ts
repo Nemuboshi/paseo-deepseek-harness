@@ -44,6 +44,8 @@ export class TimelineProjector {
   private planActive = false;
   private lastPreset: string | undefined;
   private readonly goals = new Map<string, { objective?: string; maxRounds?: number }>();
+  /** Running subagent runs: child session id to its task description. */
+  private readonly subagentRuns = new Map<string, string | undefined>();
   /** Ids of `/goal` commands between their `command/run` and `command/done`; dsh prints their result itself. */
   private readonly goalCommands = new Set<string>();
 
@@ -339,6 +341,12 @@ export class TimelineProjector {
   private projectUserMessage(event: DshSessionEvent, timestamp?: string): SessionEvent[] {
     const data = event.data;
     const source = objectValue(data.source);
+    const sender = stringValue(source?.senderSessionId);
+    if (source?.kind === "subagent-settled" && sender && this.subagentRuns.has(sender)) {
+      const description = this.subagentRuns.get(sender);
+      this.subagentRuns.delete(sender);
+      return this.subagentCard(sender, "settled", description, timestamp);
+    }
     if (source?.kind !== "user") return [];
     const id = stringValue(data.id) ?? `event:${event.seq}`;
     const text = userContentText(data.content);
@@ -445,11 +453,24 @@ export class TimelineProjector {
     const callId = stringValue(event.data.subCallId);
     if (!callId) return [];
     const payload = event.data.content;
+    const output = contentText(payload) || stringifyValue(payload);
+    const isError = event.data.isError === true;
+    const name = stringValue(event.data.name);
+    const child = isError ? undefined : /started subagent ([^\s]+)/u.exec(output)?.[1];
+    if (child && (name === "subagent" || name === "subagent_fork")) {
+      const running = this.tools.get(callId);
+      const description = running?.detail.type === "plain_text" ? running.detail.label : undefined;
+      this.subagentRuns.set(child, description);
+      return [
+        ...this.subagentCard(child, "running", description, timestamp),
+        ...this.settleTool(callId, name, output, isError, timestamp, event.data.arguments),
+      ];
+    }
     return this.settleTool(
       callId,
-      stringValue(event.data.name),
-      contentText(payload) || stringifyValue(payload),
-      event.data.isError === true,
+      name,
+      output,
+      isError,
       timestamp,
       event.data.arguments,
     );
@@ -493,13 +514,46 @@ export class TimelineProjector {
     // DSH may log the same result again after a compaction prune, so keep the id.
     if (this.transportCalls.has(callId)) return [];
     const payload = block?.content ?? message.content;
-    return this.settleTool(
-      callId,
-      undefined,
-      contentText(payload) || stringifyValue(payload),
-      message.isError === true || event.data.isError === true || block?.isError === true,
-      timestamp,
-    );
+    const output = contentText(payload) || stringifyValue(payload);
+    const isError =
+      message.isError === true || event.data.isError === true || block?.isError === true;
+    const child = /started subagent ([^\s]+)/u.exec(output)?.[1];
+    const name = this.tools.get(callId)?.name;
+    if (child && (name === "subagent" || name === "subagent_fork")) {
+      const running = this.tools.get(callId);
+      const description =
+        running?.detail.type === "plain_text" ? running.detail.label : undefined;
+      this.subagentRuns.set(child, description);
+      return [
+        ...this.subagentCard(child, "running", description, timestamp),
+        ...this.settleTool(callId, undefined, output, isError, timestamp),
+      ];
+    }
+    return this.settleTool(callId, undefined, output, isError, timestamp);
+  }
+
+  /** One card per subagent run, keyed by the child session so a settle updates it in place. */
+  private subagentCard(
+    childSessionId: string,
+    state: "running" | "settled",
+    description: string | undefined,
+    timestamp?: string,
+  ): SessionEvent[] {
+    if (!this.pluginCards) return [];
+    return [
+      timeline(
+        this.paseoSessionId,
+        {
+          type: "plugin",
+          id: `subagent-run:${childSessionId}`,
+          pluginId: PLUGIN_ID,
+          kind: CARD_KINDS.subagentRun,
+          version: CARD_VERSION,
+          data: { childSessionId, state, ...(description ? { description } : {}) },
+        },
+        timestamp,
+      ),
+    ];
   }
 
   private settleTool(

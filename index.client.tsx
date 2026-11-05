@@ -5,6 +5,7 @@ import {
   GoalCardView,
   PermissionPresetCardView,
   PlanModeCardView,
+  SubagentRunCardView,
 } from "./client/timeline-cards.js";
 import {
   CARD_KINDS,
@@ -12,6 +13,7 @@ import {
   goalCardSchema,
   permissionPresetCardSchema,
   planModeCardSchema,
+  subagentRunCardSchema,
 } from "./shared/timeline-cards.js";
 
 /** Provider presentation comes from the server registration; the client adds the dsh settings screen and timeline cards. */
@@ -22,6 +24,12 @@ export default function contribute(client: PluginClientContext) {
       title: "DeepSeek Harness",
       icon: SETTINGS_SCREEN_ICON,
       Component: DshSettingsScreen,
+    }),
+    client.addTimelineRenderer({
+      kind: CARD_KINDS.subagentRun,
+      version: CARD_VERSION,
+      schema: subagentRunCardSchema,
+      Component: SubagentRunCardView,
     }),
     client.addTimelineRenderer({
       kind: CARD_KINDS.planMode,

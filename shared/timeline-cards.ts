@@ -33,10 +33,19 @@ export const goalCardSchema = z.object({
 export type PlanModeCard = z.infer<typeof planModeCardSchema>;
 export type PermissionPresetCard = z.infer<typeof permissionPresetCardSchema>;
 export type GoalCard = z.infer<typeof goalCardSchema>;
+export type SubagentRunCard = z.infer<typeof subagentRunCardSchema>;
+
+/** One subagent run, from its start to its settle notice. */
+export const subagentRunCardSchema = z.object({
+  childSessionId: z.string(),
+  description: z.string().optional(),
+  state: z.enum(["running", "settled"]),
+});
 
 /** Card kinds keyed by the `kind` field of the Paseo plugin timeline item. */
 export const CARD_KINDS = {
   planMode: "plan-mode",
   permissionPreset: "permission-preset",
   goal: "goal",
+  subagentRun: "subagent-run",
 } as const;

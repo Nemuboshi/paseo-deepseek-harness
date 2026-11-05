@@ -133,6 +133,7 @@ Paseo items. Replay and live delivery use the same code.
 | `command/run` and `command/done` | `user_message` and a notice |
 | `turn/end` with a failure or warning | `error` item or notice |
 | `plan/mode`, `permission/preset`, `goal/change` | plugin card, if Paseo offers `timeline.plugin` |
+| `subagent` tool result, then the `subagent-settled` notice | one `subagent-run` plugin card per child session |
 
 Live `text-delta` and `reasoning-delta` chunks keep one item id per turn, step
 and attempt. Paseo receives cumulative text for that id. The durable message

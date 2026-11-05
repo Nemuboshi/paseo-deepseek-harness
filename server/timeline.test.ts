@@ -8,6 +8,7 @@ import {
   goalCardSchema,
   permissionPresetCardSchema,
   planModeCardSchema,
+  subagentRunCardSchema,
 } from "../shared/timeline-cards.js";
 import type { DshSessionEvent } from "../shared/bridge-protocol.js";
 import { TimelineProjector } from "./timeline.js";
@@ -711,5 +712,80 @@ describe("todo projection", () => {
       projector.projectEvent({ type: "todo/write", seq: 3, time: 1_002, data: { todos: [] } }),
       [],
     );
+  });
+});
+
+describe("subagent run cards", () => {
+  it("opens a card when a subagent starts and settles it on the notice", () => {
+    const projector = new TimelineProjector("s", true);
+    const started = projector.projectEvent({
+      type: "tool/ptc-dispatch-start",
+      seq: 1,
+      time: 1_000,
+      data: { subCallId: "root:ptc:1", name: "subagent", arguments: { description: "check layout", prompt: "read only" } },
+    });
+    assert.equal(started.length, 1);
+    const settledTool = projector.projectEvent({
+      type: "tool/ptc-dispatch",
+      seq: 2,
+      time: 1_001,
+      data: {
+        subCallId: "root:ptc:1",
+        name: "subagent",
+        arguments: { description: "check layout", prompt: "read only" },
+        isError: false,
+        content: [{ type: "text", text: "started subagent child-1" }],
+      },
+    });
+    const card = settledTool.map(timelineItem).find((item) => item.type === "plugin");
+    assert.ok(card, "a run card opens with the tool result");
+    if (card?.type === "plugin") {
+      assert.equal(card.kind, CARD_KINDS.subagentRun);
+      assert.deepEqual(card.data, { childSessionId: "child-1", state: "running", description: "check layout" });
+    }
+
+    const settled = projector.projectEvent({
+      type: "user/message",
+      seq: 3,
+      time: 2_000,
+      data: {
+        id: "u1",
+        role: "user",
+        source: { kind: "subagent-settled", form: "notice", summary: "done", senderSessionId: "child-1" },
+        content: [{ type: "text", text: "finished" }],
+      },
+    });
+    const closing = settled.map(timelineItem).find((item) => item.type === "plugin");
+    assert.ok(closing, "the settle notice closes the card");
+    if (closing?.type === "plugin") {
+      assert.equal(closing.id, "subagent-run:child-1");
+      assert.equal((closing.data as { state: string }).state, "settled");
+    }
+    assert.deepEqual(
+      projector.projectEvent({
+        type: "user/message",
+        seq: 4,
+        time: 2_001,
+        data: { id: "u2", role: "user", source: { kind: "subagent-settled", senderSessionId: "child-1" }, content: [] },
+      }),
+      [],
+    );
+  });
+
+  it("emits no run card without the timeline.plugin capability", () => {
+    const projector = new TimelineProjector("s");
+    projector.projectEvent({
+      type: "tool/ptc-dispatch-start",
+      seq: 1,
+      time: 1_000,
+      data: { subCallId: "root:ptc:1", name: "subagent", arguments: { description: "x", prompt: "y" } },
+    });
+    const events = projector.projectEvent({
+      type: "tool/ptc-dispatch",
+      seq: 2,
+      time: 1_001,
+      data: { subCallId: "root:ptc:1", name: "subagent", arguments: { description: "x", prompt: "y" }, isError: false, content: [{ type: "text", text: "started subagent child-2" }] },
+    });
+    assert.deepEqual(events.map(timelineItem).filter((item) => item.type === "plugin"), []);
   });
 });
